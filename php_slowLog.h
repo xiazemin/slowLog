@@ -41,12 +41,15 @@ extern zend_module_entry slowLog_module_entry;
 /*
   	Declare any global variables you may need between the BEGIN
 	and END macros here:
+ */
 
 ZEND_BEGIN_MODULE_GLOBALS(slowLog)
-	zend_long  global_value;
-	char *global_string;
+	zend_long  enable_slow_log
+	zend_long  mim_time_out_ms;
+	char *slow_log_dir;
+    zval *function_time_out_map;
+    zval *function_stack_map;
 ZEND_END_MODULE_GLOBALS(slowLog)
-*/
 
 /* Always refer to the globals in your function as SLOWLOG_G(variable).
    You are encouraged to rename these macros something shorter, see

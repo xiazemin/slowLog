@@ -7,9 +7,9 @@ dnl without editing.
 
 dnl If your extension references something external, use with:
 
-dnl PHP_ARG_WITH(slowLog, for slowLog support,
-dnl Make sure that the comment is aligned:
-dnl [  --with-slowLog             Include slowLog support])
+ PHP_ARG_WITH(slowLog, for slowLog support,
+ Make sure that the comment is aligned:
+ [  --with-slowLog             Include slowLog support])
 
 dnl Otherwise use enable:
 

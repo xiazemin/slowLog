@@ -26,16 +26,25 @@
 #include "php_ini.h"
 #include "ext/standard/info.h"
 #include "php_slowLog.h"
+#include <sys/timeb.h>
+
+#if defined(WIN32)
+# define  TIMEB    _timeb
+# define  ftime    _ftime
+#else
+#define TIMEB timeb
+#endif
 
 /* If you declare any globals in php_slowLog.h uncomment this:
 ZEND_DECLARE_MODULE_GLOBALS(slowLog)
 */
+ZEND_DECLARE_MODULE_GLOBALS(slowLog)
 
 /* True global resources - no need for thread safety here */
-static int le_slowLog;
 static void (*backup_zend_execute_ex) (zend_execute_data *execute_data);
 
-static time_t get_time_diff_ms(struct TIMEB *time_start,struct TIMEB *time_end){
+static time_t get_time_diff_ms(struct TIMEB *time_start,struct TIMEB *time_end)
+{
 	time_t t_sec,t_ms;
 	t_sec=time_end->time-time_start->time;//计算秒间隔
 	t_ms=time_end->millitm-time_start->millitm;//计算毫秒间隔
@@ -43,10 +52,41 @@ static time_t get_time_diff_ms(struct TIMEB *time_start,struct TIMEB *time_end){
 }
 
 
-static char * get_file_class_function_lineno(zend_execute_data* data){
-	char *file     = NULL;
-	char *class    = NULL;
-	char *function = NULL;
+void clear_zend_strings(zend_string* file,zend_string* class,zend_string*function){
+	//if (file!=NULL){
+	//	printf("\n1 %s  %d \n",ZSTR_VAL(file),ZSTR_VAL(file)=="-");
+	//}
+	//if(class!=NULL){
+	//	printf("\n2 %d  %s %d  %d\n",ZSTR_LEN(class),ZSTR_VAL(class),ZSTR_VAL(class)=="-",strcmp(ZSTR_VAL(class),"-")==0);
+	//	//2 1  - 0  1
+	//}
+	//
+	//if (function!=NULL){
+	//	printf("\n3  %d %s  %d  %d\n",ZSTR_LEN(function),ZSTR_VAL(function),ZSTR_VAL(function)=="-",ZSTR_VAL(function)=="-\0");
+	//}
+    if (file!=NULL && strncmp(ZSTR_VAL(file),"-",1)==0){
+        zend_string_free(file);
+        file=NULL;
+    }
+
+    if (class!=NULL && (strncmp(ZSTR_VAL(class),"-",1)==0 || strncmp(ZSTR_VAL(class),"anonymous-class",15)==0)){
+        zend_string_free(class);
+        class=NULL;
+    }
+
+    if (function!=NULL &&(strncmp(ZSTR_VAL(function),"-",1)==0 ||  strncmp(ZSTR_VAL(function),"main_op",7)==0
+                          ||  strncmp(ZSTR_VAL(function),"internal-eval",13)==0 || strncmp(ZSTR_VAL(function),"closure",7)==0)){
+        zend_string_free(function);
+        function=NULL;
+    }
+    return;
+}
+
+static char * get_file_class_function_lineno(zend_execute_data* data)
+{
+    zend_string *file     = NULL;
+    zend_string *class    = NULL;
+    zend_string *function = NULL;
 	char *ret      = NULL;
 	int len;
 
@@ -57,28 +97,28 @@ static char * get_file_class_function_lineno(zend_execute_data* data){
 	//get class name
 	if (data->This.value.obj) {
 		if (data->func->common.scope) {
-			if (strcmp(ZSTR_VAL(data->func->common.scope->name), "class@anonymous") == 0) {
-				file = ZSTR_VAL(data->func->common.scope->info.user.filename);
-				class = "anonymous-class";
+			if (strncmp(ZSTR_VAL(data->func->common.scope->name), "class@anonymous",15) == 0) {
+				file = data->func->common.scope->info.user.filename;
+                class=zend_string_init("anonymous-class",15,0);
 			} else {
-				class = ZSTR_VAL(data->func->common.scope->name);
+				class =data->func->common.scope->name;
 			}
 		} else {
-			class = ZSTR_VAL(data->This.value.obj->ce->name);
+			class =data->This.value.obj->ce->name;
 		}
 	} else {
 		if (data->func->common.scope) {
-			class = ZSTR_VAL(data->func->common.scope->name);
+			class =data->func->common.scope->name;
 		}
 	}
 
 	//get file name function name
 	if (data->func->common.function_name) {
-		file = ZSTR_VAL(data->func->op_array.filename);
-		if (strcmp(ZSTR_VAL(data->func->common.function_name), "{closure}") == 0) {
-			function = "closure";
+		file = data->func->op_array.filename;
+		if (strncmp(ZSTR_VAL(data->func->common.function_name), "{closure}",9) == 0) {
+            function=zend_string_init("closure",7,0);
 		} else {
-			function = ZSTR_VAL(data->func->common.function_name);
+			function =data->func->common.function_name;
 		}
 	} else if ( data->func->type == ZEND_EVAL_CODE &&
 			data->prev_execute_data &&
@@ -89,8 +129,8 @@ static char * get_file_class_function_lineno(zend_execute_data* data){
 					(strncmp(ZSTR_VAL(data->prev_execute_data->func->common.function_name), "create_function", 15) == 0)
 			)
 			) {
-		file = ZSTR_VAL(data->func->op_array.filename);
-		function = "internal-eval";
+		file = data->func->op_array.filename;
+        function=zend_string_init("internal-eval",13,0);
 	} else if (
 			data->prev_execute_data &&
 			data->prev_execute_data->func->type == ZEND_USER_FUNCTION &&
@@ -104,46 +144,52 @@ static char * get_file_class_function_lineno(zend_execute_data* data){
 			case ZEND_INCLUDE_ONCE:
 			case ZEND_REQUIRE_ONCE:
 				// do nothing
+                clear_zend_strings(file,class,function);
 				return NULL;
 			default:
 				// record
-				file = ZSTR_VAL(data->func->op_array.filename);
-				function = "???_op";
+				file =data->func->op_array.filename;
+                function=zend_string_init("main_op",7,0);
 				break;
 		}
 	} else if (data->prev_execute_data) {
-		return  get_file_class_function_lineno(data->prev_execute_data);
+        clear_zend_strings(file,class,function);
+		return  NULL;//get_file_class_function_lineno(data->prev_execute_data);
 	} else {
 		// record
-		file = ZSTR_VAL(data->func->op_array.filename);
-		function = "???_op";
+		file = data->func->op_array.filename;
+        function=zend_string_init("main_op",7,0);
 	}
 
-	if (function == NULL || strlen(function) <= 0) {
+	if (function == NULL || ZSTR_LEN(function) <= 0) {
+        clear_zend_strings(file,class,function);
 		return NULL;
 	}
 
-	if (file == NULL || strlen(file)<=0) {
-		file = "-";
+	if (file == NULL || ZSTR_LEN(file)<=0) {
+        file=zend_string_init("-",1,0);
 	}
 
-	if (class == NULL || strlen(class) <= 0) {
-		class = "-";
+	if (class == NULL || ZSTR_LEN(class) <= 0) {
+        class=zend_string_init("-",1,0);
 	}
 
-	len = strlen(file) + strlen(class) + strlen(function)+24;
+	len = ZSTR_LEN(file) + ZSTR_LEN(class) + ZSTR_LEN(function)+24;
 	ret = (char*)emalloc(len);
-	snprintf(ret, len, "[file]%s{class}%s(function)%s", file, class, function);
+	snprintf(ret, len, "[file]%s{class}%s(function)%s",ZSTR_VAL(file),
+	        ZSTR_VAL(class),ZSTR_VAL(function));
 	ret[len-1] = '\0';
+    clear_zend_strings(file,class,function);
 	return  ret;
 }
+
 
 static long get_stack_depth(HashTable *htd,char *caller_name)
 {
 	zval* last_val=NULL;
 	zend_string *key=NULL;
 
-	if (NULL==htd || NULL=caller_name){
+	if (NULL==htd || NULL==caller_name){
 		return 0;
 	}
 
@@ -152,7 +198,7 @@ static long get_stack_depth(HashTable *htd,char *caller_name)
 	}
 
 	key=zend_string_init(caller_name,strlen(caller_name),0);
-	last_val= zend_hash_find(Z_ARRVAL_P(MYFILE_G(function_stack_map)), key);
+	last_val= zend_hash_find(Z_ARRVAL_P(SLOWLOG_G(function_stack_map)), key);
 	zend_string_release(key);
 
 	if(last_val!=NULL) {
@@ -162,23 +208,24 @@ static long get_stack_depth(HashTable *htd,char *caller_name)
 	return 0;
 }
 
-static void record_function_runtime_info(char* func_info, char*caller_info,time_t time_elapsed){
-	HashTable *htd=HASH_OF(MYFILE_G(function_stack_map));
-	HashTable *ht = HASH_OF(MYFILE_G(function_time_out_map));
+static void record_function_runtime_info(char* func_info, char*caller_info,time_t time_elapsed)
+{
+	HashTable *htd=HASH_OF(SLOWLOG_G(function_stack_map));
+	HashTable *ht = HASH_OF(SLOWLOG_G(function_time_out_map));
 	if(NULL==ht||NULL==htd||NULL==func_info){
 		return;
 	}
 
 
 	if (!zend_hash_str_exists(ht, func_info, strlen(func_info))) {
-			add_assoc_long(MYFILE_G(function_time_out_map), function_time_out_map, time_elapsed);
+			add_assoc_long(SLOWLOG_G(function_time_out_map), func_info, time_elapsed);
 		}else{
 		zend_string *key=zend_string_init(func_info,strlen(func_info),0);
-		zval* last_val = zend_hash_find(Z_ARRVAL_P(MYFILE_G(function_time_out_map)),key);
+		zval* last_val = zend_hash_find(Z_ARRVAL_P(SLOWLOG_G(function_time_out_map)),key);
 		zend_string_release(key);
 		key=NULL;
 		if(last_val!=NULL && time_elapsed>Z_LVAL(*last_val)){
-			add_assoc_long(MYFILE_G(function_time_out_map), func_info, time_elapsed);
+			add_assoc_long(SLOWLOG_G(function_time_out_map), func_info, time_elapsed);
 		}
 	}
 
@@ -189,15 +236,16 @@ static void record_function_runtime_info(char* func_info, char*caller_info,time_
 	if (caller_depth<depth+1){
 		caller_depth=depth+1;
 		if (caller_info!=NULL){
-			add_assoc_long(MYFILE_G(function_stack_map),caller_info,caller_depth);
+			add_assoc_long(SLOWLOG_G(function_stack_map),caller_info,caller_depth);
 		}
 	}
-	//add_assoc_long(MYFILE_G(function_stack_map),func_info,depth);
+	//add_assoc_long(SLOWLOG_G(function_stack_map),func_info,depth);
 
 	return;
 }
-ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data){
-	if (MYFILE_G(enable_slow_log)!=1) {
+ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data)
+{
+	if (SLOWLOG_G(enable_slow_log)!=1) {
 		backup_zend_execute_ex(execute_data);
 		return;
 	}
@@ -228,7 +276,7 @@ ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data){
 	/* If we're in a ZEND_EXT_STMT, we ignore this function call as it's likely
        that it's just being called to check for breakpoints with conditions */
 	if (prev_data && prev_data->func && ZEND_USER_CODE(prev_data->func->type) && prev_data->opline && prev_data->opline->opcode == ZEND_EXT_STMT) {
-		my_zend_execute_ex(execute_data);
+		backup_zend_execute_ex(execute_data);
 		ftime(&time_end);//停止计时
 		return;
 	}
@@ -241,12 +289,20 @@ ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data){
 		return;
 	}
 
-	slow_log_zend_execute_hook(execute_data);
+	backup_zend_execute_ex(execute_data);
 	ftime(&time_end);//停止计时
 	time_elapsed=get_time_diff_ms(&time_start,&time_end);
 
-	if (current_data && current_data->prev_execute_data) {
-		caller_info = get_file_class_function_lineno(current_data->prev_execute_data);
+	//Zend/zend_buildin_functions.c +2600
+	//if (current_data && current_data->prev_execute_data) {
+	//	caller_info = get_file_class_function_lineno(current_data->prev_execute_data);
+	if (prev_data && prev_data->func){
+		if (!prev_data->func || !ZEND_USER_CODE(prev_data->func->common.type)) {
+			prev_data = prev_data->prev_execute_data;
+		}
+		if (prev_data->func && ZEND_USER_CODE(prev_data->func->common.type) && (prev_data->opline->opcode == ZEND_NEW)) {
+			caller_info = get_file_class_function_lineno(prev_data);
+		}
 	}
 
 	record_function_runtime_info(func_info,caller_info,time_elapsed);
@@ -263,12 +319,12 @@ ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data){
  */
 /* Remove comments and fill if you need to have entries in php.ini
  */
-PHP_INI_BEGIN()
-    STD_PHP_INI_ENTRY("slowLog.enable_slow_log","0", PHP_INI_ALL, OnUpdateLong, enable_slow_log, zend_slowLog_globals, slowLog_globals)
-    STD_PHP_INI_ENTRY("slowLog.min_time_out_ms","80", PHP_INI_ALL, OnUpdateLong, min_time_out_ms, zend_slowLog_globals, slowLog_globals)
-    STD_PHP_INI_ENTRY("slowLog.slow_log_dir", "/usr/local/var/log/slow_php_function.log", PHP_INI_ALL, OnUpdateString, slow_log_dir, zend_slowLog_globals, slowLog_globals)
-PHP_INI_END()
 /* }}} */
+PHP_INI_BEGIN()
+	STD_PHP_INI_ENTRY("slowLog.enable_slow_log","0", PHP_INI_ALL, OnUpdateLong, enable_slow_log, zend_slowLog_globals, slowLog_globals)
+	STD_PHP_INI_ENTRY("slowLog.min_time_out_ms","80", PHP_INI_ALL, OnUpdateLong, min_time_out_ms, zend_slowLog_globals, slowLog_globals)
+	STD_PHP_INI_ENTRY("slowLog.slow_log_dir", "/usr/local/var/log/slow_php_function.log", PHP_INI_ALL, OnUpdateString, slow_log_dir, zend_slowLog_globals, slowLog_globals)
+PHP_INI_END()
 
 /* Remove the following function when you have successfully modified config.m4
    so that your module can be compiled into PHP, it exists only for testing
@@ -315,8 +371,8 @@ static void php_slowLog_init_globals(zend_slowLog_globals *slowLog_globals)
 PHP_MINIT_FUNCTION(slowLog)
 {
 	/* If you have INI entries, uncomment these lines
-	REGISTER_INI_ENTRIES();
 	*/
+   REGISTER_INI_ENTRIES();
 	return SUCCESS;
 }
 /* }}} */
@@ -343,19 +399,19 @@ PHP_RINIT_FUNCTION(slowLog)
 	backup_zend_execute_ex=zend_execute_ex;
 	zend_execute_ex=slow_log_zend_execute_hook;
 
-	if (MYFILE_G(function_time_out_map)) {
-		zval_ptr_dtor(MYFILE_G(function_time_out_map));
-		efree(MYFILE_G(function_time_out_map));
+	if (SLOWLOG_G(function_time_out_map)) {
+		zval_ptr_dtor(SLOWLOG_G(function_time_out_map));
+		efree(SLOWLOG_G(function_time_out_map));
 	}
-	MYFILE_G(function_time_out_map) = (zval *)emalloc(sizeof(zval));
-	array_init(MYFILE_G(function_time_out_map));
+	SLOWLOG_G(function_time_out_map) = (zval *)emalloc(sizeof(zval));
+	array_init(SLOWLOG_G(function_time_out_map));
 
-	if (MYFILE_G(function_stack_map)) {
-		zval_ptr_dtor(MYFILE_G(function_stack_map));
-		efree(MYFILE_G(function_stack_map));
+	if (SLOWLOG_G(function_stack_map)) {
+		zval_ptr_dtor(SLOWLOG_G(function_stack_map));
+		efree(SLOWLOG_G(function_stack_map));
 	}
-	MYFILE_G(function_stack_map) = (zval *)emalloc(sizeof(zval));
-	array_init(MYFILE_G(function_stack_map));
+	SLOWLOG_G(function_stack_map) = (zval *)emalloc(sizeof(zval));
+	array_init(SLOWLOG_G(function_stack_map));
 	return SUCCESS;
 }
 /* }}} */
@@ -364,28 +420,31 @@ static void save_slow_func_log(){
 	FILE *fp=NULL;
 	char *mode="a+";
 	zend_ulong num_key=0;
-	zend_string* string_key=NULL,*result=NUL;
-	zval *entry=NULL,*lastVal=NULL;
-	if(NULL==MYFILE_G(slow_log_dir)||""==MYFILE_G(slow_log_dir)){
+	zend_string* string_key=NULL,*result=NULL;
+	zval *entry=NULL,*last_val=NULL;
+	if(NULL==SLOWLOG_G(slow_log_dir)||""==SLOWLOG_G(slow_log_dir)){
+        printf("log file dir config error,%s,%lld,%lld",SLOWLOG_G(slow_log_dir),SLOWLOG_G(min_time_out_ms),SLOWLOG_G(enable_slow_log));
 		return;
 	}
-	fp = VCWD_FOPEN(MYFILE_G(slow_log_dir), mode;
+	fp = VCWD_FOPEN(SLOWLOG_G(slow_log_dir), mode);
 	if(NULL==fp){
+	    printf("open log file failed");
 		return;
 	}
 
 
-	ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(MYFILE_G(function_time_out_map)), num_key, string_key, entry) {
-		if(MYFILE_G(mim_time_out_ms)>Z_LVAL(*entry)) {
+	ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(SLOWLOG_G(function_time_out_map)), num_key, string_key, entry) {
+	    if(SLOWLOG_G(min_time_out_ms)>Z_LVAL(*entry)) {
 			continue;
 		}
 
-		lastVal = zend_hash_find(Z_ARRVAL_P(MYFILE_G(function_stack_map)),string_key);
+		last_val = zend_hash_find(Z_ARRVAL_P(SLOWLOG_G(function_stack_map)),string_key);
 		long depth=0;
-		if (lastVal!=NULL){
-			depth=Z_LVAL(*lastVal);
+		if (last_val!=NULL){
+			depth=Z_LVAL(*last_val);
 		}
 
+		//printf("%s,%ld",ZSTR_VAL(string_key),depth);
 		char * tabs=emalloc(depth+1);
 		if (tabs!=NULL){
 			int i=0;
@@ -400,15 +459,24 @@ static void save_slow_func_log(){
 			result = strpprintf(0, "%s:%dms\n",ZSTR_VAL(string_key), Z_LVAL(*entry));
 		}
 
-		if (NULL!=result) {
-			fwrite(result, strlen(result) * sizeof(char), 1, fp);
+		if (NULL!=result && ZSTR_VAL(result)!=NULL) {
+		    char * result_str=NULL;
+		    int len=0;
+		    len=ZSTR_LEN(result)+1;
+
+            result_str=emalloc(len);
+            snprintf(result_str, len, "%s",ZSTR_VAL(result));
+            result_str[len-1]='\0';
+
+			fwrite(result_str, len, 1, fp);
+			efree(result_str);
 			efree(result);
 			result=NULL;
 		}
 
 	} ZEND_HASH_FOREACH_END();
 
-	close(fp);
+	fclose(fp);
 	fp=NULL;
 	return;
 }
@@ -423,16 +491,16 @@ PHP_RSHUTDOWN_FUNCTION(slowLog)
 
 	save_slow_func_log();
 
-	if (MYFILE_G(function_time_out_map)) {
-		zval_ptr_dtor(MYFILE_G(function_time_out_map));
-		efree(MYFILE_G(function_time_out_map));
-		MYFILE_G(function_time_out_map) = NULL;
+	if (SLOWLOG_G(function_time_out_map)) {
+		zval_ptr_dtor(SLOWLOG_G(function_time_out_map));
+		efree(SLOWLOG_G(function_time_out_map));
+		SLOWLOG_G(function_time_out_map) = NULL;
 	}
 
-	if (MYFILE_G(function_stack_map)) {
-		zval_ptr_dtor(MYFILE_G(function_stack_map));
-		efree(MYFILE_G(function_stack_map));
-		MYFILE_G(function_stack_map) = NULL;
+	if (SLOWLOG_G(function_stack_map)) {
+		zval_ptr_dtor(SLOWLOG_G(function_stack_map));
+		efree(SLOWLOG_G(function_stack_map));
+		SLOWLOG_G(function_stack_map) = NULL;
 	}
 	return SUCCESS;
 }

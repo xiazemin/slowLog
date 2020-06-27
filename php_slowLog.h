@@ -44,8 +44,8 @@ extern zend_module_entry slowLog_module_entry;
  */
 
 ZEND_BEGIN_MODULE_GLOBALS(slowLog)
-	zend_long  enable_slow_log
-	zend_long  mim_time_out_ms;
+	zend_long  enable_slow_log;
+	zend_long  min_time_out_ms;
 	char *slow_log_dir;
     zval *function_time_out_map;
     zval *function_stack_map;

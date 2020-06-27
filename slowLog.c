@@ -300,7 +300,7 @@ ZEND_DLEXPORT void slow_log_zend_execute_hook(zend_execute_data *execute_data)
 		if (!prev_data->func || !ZEND_USER_CODE(prev_data->func->common.type)) {
 			prev_data = prev_data->prev_execute_data;
 		}
-		if (prev_data->func && ZEND_USER_CODE(prev_data->func->common.type) && (prev_data->opline->opcode == ZEND_NEW)) {
+		if (prev_data->func && ZEND_USER_CODE(prev_data->func->common.type)) {//&& (prev_data->opline->opcode == ZEND_NEW)
 			caller_info = get_file_class_function_lineno(prev_data);
 		}
 	}

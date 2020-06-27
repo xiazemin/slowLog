@@ -1,0 +1,24 @@
+$vi /usr/local/lib/php.ini
+[slowLog]
+extension=/usr/local/lib/php/extensions/debug-non-zts-20160303/slowLog.so
+slowLog.enable_slow_log = 1
+slowLog.min_time_out_ms = 50
+slowLog.slow_log_dir = /Users/didi/PhpstormProjects/c/php-src/ext/slowLog/slow_php_function.log
+
+
+php_prefix=/usr/local/
+php_fpm_PID=$php_prefix/var/run/php-fpm.pid
+kill -USR2 `cat $php_fpm_PID`
+
+
+tail -f slow_php_function.log
+
+
+$php tests/spl.php
+
+[file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/a.php{class}A(function)func2:584ms
+[file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/b.php{class}B(function)func1:64ms
+[file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/spl.php{class}-(function)c:56ms
+ [file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/spl.php{class}-(function)b:115ms
+  [file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/spl.php{class}-(function)a:172ms
+           [file]/Users/didi/PhpstormProjects/c/php-src/ext/slowLog/tests/spl.php{class}-(function)main_op:821ms
